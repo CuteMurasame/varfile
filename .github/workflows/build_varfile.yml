@@ -1,0 +1,56 @@
+name: Build varfile (Windows DLL, x86 + x64)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main", "master" ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86, x64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup CMake (show version)
+        run: cmake --version
+
+      - name: Configure (Visual Studio)
+        run: |
+          if [ "${{ matrix.arch }}" = "x64" ]; then
+            cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+          else
+            cmake -S . -B build -G "Visual Studio 17 2022" -A Win32 -DCMAKE_BUILD_TYPE=Release
+          fi
+
+      - name: Build (Release)
+        run: cmake --build build --config Release --parallel
+
+      - name: Collect DLLs
+        shell: pwsh
+        run: |
+          $out = "$PWD\artifact\${{ matrix.arch }}"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          # copy any .dll under build
+          Get-ChildItem -Path "$PWD\build" -Filter *.dll -Recurse -ErrorAction SilentlyContinue |
+            ForEach-Object { Copy-Item $_.FullName -Destination $out -Force }
+          # also check common Release folder
+          Get-ChildItem -Path "$PWD\build\Release" -Filter *.dll -Recurse -ErrorAction SilentlyContinue |
+            ForEach-Object { Copy-Item $_.FullName -Destination $out -Force }
+          if (-not (Get-ChildItem $out -Filter *.dll -Recurse -ErrorAction SilentlyContinue)) {
+            Write-Host "No .dll files found for $(${{ matrix.arch }}). See build logs."
+            exit 1
+          } else {
+            Write-Host "Copied DLL(s) to $out"
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: varfile-dll-${{ matrix.arch }}
+          path: artifact/${{ matrix.arch }}
