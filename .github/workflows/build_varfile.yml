@@ -1,4 +1,4 @@
-name: Build varfile (with ncbind clone, debug logs)
+name: Build varfile (clone ncbind + tp_stub, debug logs)
 
 on:
   workflow_dispatch:
@@ -14,55 +14,65 @@ jobs:
       fail-fast: false
 
     steps:
-      - name: Checkout (no submodules)
+      - name: Checkout varfile (no submodules)
         uses: actions/checkout@v4
-        # ncbind is expected as a sibling directory (../ncbind), so we will clone it manually.
+        with:
+          submodules: false
 
       - name: Print workspace info
         shell: pwsh
         run: |
           Write-Host "GITHUB_WORKSPACE: $env:GITHUB_WORKSPACE"
           Write-Host "PWD: $PWD"
-          Get-ChildItem -Force | ForEach-Object { Write-Host $_.Name }
+          Write-Host "Listing repo root:"
+          Get-ChildItem -Force $env:GITHUB_WORKSPACE | ForEach-Object { Write-Host $_.Name }
 
-      - name: Clone ncbind into parent folder (required by CMake)
+      - name: Determine parent folder and clone dependencies
         shell: pwsh
         run: |
-          $ncbindUrl = 'https://github.com/wamsoft/ncbind.git'
-          # compute target path: parent of current repo checkout
-          $parent = Join-Path $PWD '..'
-          $dest = Join-Path $parent 'ncbind'
-          Write-Host "Cloning ncbind into $dest"
-          if (Test-Path $dest) {
-            Write-Host "Removing existing $dest"
-            Remove-Item -Recurse -Force $dest
+          $cwd = $env:GITHUB_WORKSPACE
+          if (-not $cwd) { Write-Host "GITHUB_WORKSPACE not set"; exit 1 }
+          $parent = Split-Path -Parent $cwd
+          Write-Host "Parent folder: $parent"
+          $repos = @{
+            "ncbind" = "https://github.com/wamsoft/ncbind.git"
+            "tp_stub" = "https://github.com/wamsoft/tp_stub.git"
           }
-          git clone $ncbindUrl $dest
-          # initialise submodules inside ncbind if any
-          if (Test-Path $dest) {
-            Write-Host "Initialising submodules in ncbind (if present)"
+          foreach ($name in $repos.Keys) {
+            $url = $repos[$name]
+            $dest = Join-Path $parent $name
+            Write-Host "`n--- Preparing $name at $dest ---"
+            if (Test-Path $dest) {
+              Write-Host "Removing existing $dest"
+              Remove-Item -Recurse -Force $dest
+            }
+            Write-Host "Cloning $url -> $dest"
+            git clone $url $dest
+            if ($LASTEXITCODE -ne 0) { Write-Host "git clone failed for $name"; exit 1 }
+            Write-Host "Initializing submodules (if any) for $name"
             git -C $dest submodule update --init --recursive
-          } else {
-            Write-Host "ncbind clone failed or dest missing"
-            exit 1
+            if ($LASTEXITCODE -ne 0) { Write-Host "submodule init failed for $name (continuing)"; }
+            Write-Host "$name ready."
           }
-          Write-Host "ncbind cloned."
+          Write-Host "`nParent directory contents (sanity):"
+          Get-ChildItem -Path $parent -Force | ForEach-Object { Write-Host $_.Name }
 
-      - name: Print parent dir contents (sanity)
+      - name: Print Visual Studio + CMake info
         shell: pwsh
         run: |
-          Write-Host "`nParent dir listing:"
-          Get-ChildItem -Path (Join-Path $PWD '..') -Force | ForEach-Object { Write-Host $_.Name }
+          cmake --version
+          Write-Host "Sample Visual Studio installs:"
+          Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\' -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.Name }
 
-      - name: Configure CMake (PowerShell conditional)
+      - name: Configure CMake for architecture
         shell: pwsh
         run: |
           $arch = '${{ matrix.arch }}'
           Write-Host "Configuring for architecture: $arch"
           if ($arch -eq 'x64') {
-            cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON -Wdev
+            cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON -Wdev
           } else {
-            cmake -S . -B build -G "Visual Studio 17 2022" -A Win32 -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON -Wdev
+            cmake -S . -B build -G "Visual Studio 17 2022" -A Win32 -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON -Wdev
           }
 
       - name: Build (capture log)
