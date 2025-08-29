@@ -1,4 +1,4 @@
-name: Build varfile (debug logs, fixed)
+name: Build varfile (with ncbind clone, debug logs)
 
 on:
   workflow_dispatch:
@@ -14,18 +14,45 @@ jobs:
       fail-fast: false
 
     steps:
-      - name: Checkout (with submodules)
+      - name: Checkout (no submodules)
         uses: actions/checkout@v4
-        with:
-          submodules: true
+        # ncbind is expected as a sibling directory (../ncbind), so we will clone it manually.
 
-      - name: Print environment info
+      - name: Print workspace info
         shell: pwsh
         run: |
-          Write-Host "Runner: $env:RUNNER_OS"
-          cmake --version
-          Write-Host "Visual Studio installations (sample):"
-          Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\' -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          Write-Host "GITHUB_WORKSPACE: $env:GITHUB_WORKSPACE"
+          Write-Host "PWD: $PWD"
+          Get-ChildItem -Force | ForEach-Object { Write-Host $_.Name }
+
+      - name: Clone ncbind into parent folder (required by CMake)
+        shell: pwsh
+        run: |
+          $ncbindUrl = 'https://github.com/wamsoft/ncbind.git'
+          # compute target path: parent of current repo checkout
+          $parent = Join-Path $PWD '..'
+          $dest = Join-Path $parent 'ncbind'
+          Write-Host "Cloning ncbind into $dest"
+          if (Test-Path $dest) {
+            Write-Host "Removing existing $dest"
+            Remove-Item -Recurse -Force $dest
+          }
+          git clone $ncbindUrl $dest
+          # initialise submodules inside ncbind if any
+          if (Test-Path $dest) {
+            Write-Host "Initialising submodules in ncbind (if present)"
+            git -C $dest submodule update --init --recursive
+          } else {
+            Write-Host "ncbind clone failed or dest missing"
+            exit 1
+          }
+          Write-Host "ncbind cloned."
+
+      - name: Print parent dir contents (sanity)
+        shell: pwsh
+        run: |
+          Write-Host "`nParent dir listing:"
+          Get-ChildItem -Path (Join-Path $PWD '..') -Force | ForEach-Object { Write-Host $_.Name }
 
       - name: Configure CMake (PowerShell conditional)
         shell: pwsh
@@ -44,7 +71,6 @@ jobs:
           $arch = '${{ matrix.arch }}'
           $log = "build_${arch}.log"
           Write-Host "Building ($arch) and writing to $log"
-          # Build and tee output (captures stdout+stderr)
           cmake --build build --config Release --parallel 2>&1 | Tee-Object -FilePath $log -Encoding utf8
           $exit = $LASTEXITCODE
           if ($exit -ne 0) {
